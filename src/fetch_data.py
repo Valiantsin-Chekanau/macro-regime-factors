@@ -25,7 +25,6 @@ Requires FRED_API_KEY in .env (see .env.example).
 """
 
 import os
-import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -202,7 +201,8 @@ def main():
     for series_id in MACRO_SERIES:
         sanity_check_vintages(fred, series_id, releases_cache.get(series_id), sample_dates)
 
-    print("\nDone. Next: merge macro_pit + factors monthly, build the regime classifier (Week 2).")
+    print("\nDone. Next: run src/build_panel.py to merge with factor returns, "
+          "then build the regime classifier (Week 2).")
 
 
 if __name__ == "__main__":

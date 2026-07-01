@@ -4,7 +4,8 @@ Conditioning U.S. equity-factor performance (value, momentum, size, profitabilit
 investment) on a growth × inflation macro-regime layer — built with point-in-time
 data to avoid lookahead.
 
-**Status:** Week 1 in progress (data spine). See `WRITEUP.md` (coming Week 4) for results.
+**Status:** Week 1 done (point-in-time data spine + aligned panel). Week 2 (regime
+classifier) next. See `WRITEUP.md` (coming Week 4) for results.
 
 ## Thesis
 Not a return predictor. Macro is used as a *conditioning variable*: how the equity
@@ -26,8 +27,8 @@ _Coming Week 3-4._
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # add your FRED_API_KEY
-python src/fetch_data.py
-python src/run_analysis.py
+python src/fetch_data.py     # pulls point-in-time macro + factor data -> data/
+python src/build_panel.py    # merges into one aligned monthly panel
 ```
 
 ## Limitations

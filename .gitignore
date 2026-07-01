@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+venv/
+.venv/
+
+# Secrets
+.env
+
+# Data (reproducible via src/fetch_data.py, not committed)
+data/
+*.parquet
+*.csv
+
+# OS
+.DS_Store
+
+# Personal planning doc — not for the public repo
+macro_regime_conditioning_guide.md

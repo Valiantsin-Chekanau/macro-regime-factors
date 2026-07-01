@@ -1,0 +1,7 @@
+pandas
+numpy
+matplotlib
+fredapi
+pandas-datareader
+scipy
+python-dotenv

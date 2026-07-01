@@ -5,3 +5,4 @@ fredapi
 pandas-datareader
 scipy
 python-dotenv
+pyarrow

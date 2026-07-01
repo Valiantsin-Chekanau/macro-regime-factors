@@ -6,12 +6,18 @@ only valid if it uses macro values that were ACTUALLY PUBLISHED and not-yet-revi
 as of the decision date. Pulling "latest revised" INDPRO/CPI and pretending you knew
 it in real time is lookahead bias, full stop.
 
+Implementation note: fredapi's get_series_as_of_date() re-downloads a series' ENTIRE
+vintage history on every call and doesn't collapse to "latest known reference period" —
+calling it once per decision date is both slow (one full-history HTTP call per date)
+and subtly wrong (can return a stale period's late revision instead of the newest
+known period). Instead we pull get_series_all_releases() ONCE per series (one bulk
+call) and do all point-in-time lookups locally in pandas.
+
 Two paths, in priority order:
-  1. ALFRED vintages (preferred) — for each monthly decision date T, ask FRED
-     "what was the most recently published value as of T?" via get_series_as_of_date.
-  2. Lag-floor fallback (safety net) — if ALFRED vintage history doesn't reach far
-     enough back for a series, shift the latest-revised series by its known
-     publication delay instead. Never let vintage-fetching block progress.
+  1. ALFRED vintages (preferred) — described above.
+  2. Lag-floor fallback (safety net) — if ALFRED vintage history doesn't cover a
+     series, shift the latest-revised series by its known publication delay instead.
+     Never let vintage-fetching block progress.
 
 Run:
     python src/fetch_data.py
@@ -19,7 +25,6 @@ Requires FRED_API_KEY in .env (see .env.example).
 """
 
 import os
-import time
 import warnings
 from pathlib import Path
 
@@ -64,35 +69,36 @@ def monthly_decision_dates(start=FRED_HISTORY_START, end=None):
     return pd.date_range(start=start, end=end, freq="MS")
 
 
-def get_asof_last_known(fred: Fred, series_id: str, as_of_date: pd.Timestamp):
-    """
-    Most recent value of `series_id` that was PUBLISHED as of `as_of_date`,
-    using ALFRED vintages. Returns (reference_period, value) or (None, None)
-    if nothing had been published yet.
-    """
-    as_of_str = as_of_date.strftime("%Y-%m-%d")
-    vintage_series = fred.get_series_as_of_date(series_id, as_of_str)
-    if vintage_series is None or vintage_series.empty:
-        return None, None
-    vintage_series = vintage_series.dropna()
-    if vintage_series.empty:
-        return None, None
-    return vintage_series.index[-1], vintage_series.iloc[-1]
+def fetch_all_releases(fred: Fred, series_id: str) -> pd.DataFrame:
+    """ONE bulk call: full vintage history (date=reference period, realtime_start, value)."""
+    df = fred.get_series_all_releases(series_id)
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["realtime_start"] = pd.to_datetime(df["realtime_start"])
+    return df.sort_values(["date", "realtime_start"]).reset_index(drop=True)
 
 
-def fetch_pit_series_alfred(fred: Fred, series_id: str, decision_dates) -> pd.Series:
-    """Point-in-time panel for one series across all decision dates, via ALFRED."""
+def pit_panel_from_releases(releases: pd.DataFrame, decision_dates, series_id: str) -> pd.Series:
+    """
+    For each decision date T: find the newest reference period whose FIRST release
+    happened on/before T, then take that period's latest revision known as of T.
+    All done locally in pandas — no network calls.
+    """
+    first_release = releases.groupby("date")["realtime_start"].min().sort_index()
+
     values = {}
-    for d in decision_dates:
-        try:
-            ref_period, val = get_asof_last_known(fred, series_id, d)
-        except Exception as e:  # noqa: BLE001 — ALFRED can be flaky per-date; log and skip
-            warnings.warn(f"{series_id} as-of {d.date()} failed: {e}")
-            ref_period, val = None, None
-        if val is not None:
-            values[d] = val
+    for T in decision_dates:
+        visible = first_release[first_release <= T]
+        if visible.empty:
+            continue
+        latest_period = visible.index.max()
+        rows = releases[(releases["date"] == latest_period) & (releases["realtime_start"] <= T)]
+        if rows.empty:
+            continue
+        values[T] = rows.sort_values("realtime_start")["value"].iloc[-1]
+
     if not values:
-        raise RuntimeError(f"ALFRED vintages returned nothing for {series_id}")
+        raise RuntimeError(f"no point-in-time values resolved for {series_id}")
     return pd.Series(values, name=series_id).sort_index()
 
 
@@ -112,18 +118,23 @@ def fetch_pit_series_lag_floor(fred: Fred, series_id: str, decision_dates) -> pd
     return pd.Series(values, name=series_id).sort_index()
 
 
-def fetch_macro_panel(fred: Fred) -> pd.DataFrame:
+def fetch_macro_panel(fred: Fred):
+    """Returns (panel_df, releases_cache) — releases_cache reused later for the sanity check."""
     decision_dates = monthly_decision_dates()
     cols = {}
+    releases_cache = {}
     for series_id in MACRO_SERIES:
         try:
-            print(f"  [ALFRED] {series_id} ...")
-            cols[series_id] = fetch_pit_series_alfred(fred, series_id, decision_dates)
+            print(f"  [ALFRED] {series_id}: pulling full vintage history (1 bulk call)...")
+            releases = fetch_all_releases(fred, series_id)
+            releases_cache[series_id] = releases
+            cols[series_id] = pit_panel_from_releases(releases, decision_dates, series_id)
+            print(f"    resolved {len(cols[series_id])} monthly point-in-time values")
         except Exception as e:  # noqa: BLE001
             print(f"  [ALFRED FAILED for {series_id}: {e}] falling back to lag-floor")
             cols[series_id] = fetch_pit_series_lag_floor(fred, series_id, decision_dates)
-        time.sleep(0.2)  # be polite to the API
-    return pd.DataFrame(cols)
+            releases_cache[series_id] = None
+    return pd.DataFrame(cols), releases_cache
 
 
 # ---------------------------------------------------------------------------
@@ -145,17 +156,21 @@ def fetch_french_factors() -> pd.DataFrame:
 # Sanity check (Week 1 definition-of-done): prove vintages != latest-revised
 # ---------------------------------------------------------------------------
 
-def sanity_check_vintages(fred: Fred, series_id: str, sample_dates):
+def sanity_check_vintages(fred: Fred, series_id: str, releases: pd.DataFrame, sample_dates):
+    if releases is None:
+        print(f"\nSanity check skipped for {series_id} (ALFRED unavailable, used lag-floor)")
+        return
     print(f"\nSanity check for {series_id}: as-of value vs latest-revised value")
     print(f"{'as_of_date':<12}{'ref_period':<12}{'as_of_value':>14}{'latest_value':>14}{'differs?':>10}")
     latest = fred.get_series(series_id)
-    for d in sample_dates:
-        ref_period, as_of_val = get_asof_last_known(fred, series_id, d)
-        if ref_period is None:
-            continue
+    single_date_panel = pit_panel_from_releases(releases, sample_dates, series_id)
+    first_release = releases.groupby("date")["realtime_start"].min().sort_index()
+    for T, as_of_val in single_date_panel.items():
+        visible = first_release[first_release <= T]
+        ref_period = visible.index.max()
         latest_val = latest.get(ref_period)
         differs = "YES" if (latest_val is not None and abs(latest_val - as_of_val) > 1e-9) else "no"
-        print(f"{d.date()!s:<12}{ref_period.date()!s:<12}{as_of_val:>14.3f}{latest_val:>14.3f}{differs:>10}")
+        print(f"{T.date()!s:<12}{ref_period.date()!s:<12}{as_of_val:>14.3f}{latest_val:>14.3f}{differs:>10}")
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +188,7 @@ def main():
     DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
 
     print("Fetching point-in-time macro panel (INDPRO, CPIAUCSL)...")
-    macro_pit = fetch_macro_panel(fred)
+    macro_pit, releases_cache = fetch_macro_panel(fred)
     macro_pit.to_parquet(DATA_PROCESSED / "macro_pit.parquet")
     print(f"  saved {macro_pit.shape[0]} rows -> data/processed/macro_pit.parquet")
 
@@ -185,10 +200,7 @@ def main():
     # Definition of done: prove the vintage logic actually does something.
     sample_dates = pd.to_datetime(["1990-06-01", "2001-06-01", "2009-06-01", "2020-06-01"])
     for series_id in MACRO_SERIES:
-        try:
-            sanity_check_vintages(fred, series_id, sample_dates)
-        except Exception as e:  # noqa: BLE001
-            print(f"  sanity check skipped for {series_id}: {e}")
+        sanity_check_vintages(fred, series_id, releases_cache.get(series_id), sample_dates)
 
     print("\nDone. Next: merge macro_pit + factors monthly, build the regime classifier (Week 2).")
 

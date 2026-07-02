@@ -39,6 +39,13 @@ DATA_PROCESSED = Path("data/processed")
 
 TRAILING_WINDOW_MONTHS = 60  # 5yr, see module docstring for why not expanding-mean
 
+QUADRANT_NAMES = {
+    ("Up", "Falling"): "Goldilocks",
+    ("Up", "Rising"): "Overheating",
+    ("Down", "Rising"): "Stagflation",
+    ("Down", "Falling"): "Deflationary slowdown",
+}
+
 
 def add_states(panel: pd.DataFrame) -> pd.DataFrame:
     """Add YoY growth/inflation and Up/Down, Rising/Falling state columns."""
@@ -69,11 +76,24 @@ def add_states(panel: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def add_regime(panel: pd.DataFrame) -> pd.DataFrame:
+    """Cross growth_state x inflation_state into the named 2x2 quadrant."""
+    out = panel.copy()
+    labeled = out["growth_state"].notna() & out["inflation_state"].notna()
+
+    out["regime"] = None
+    out.loc[labeled, "regime"] = out.loc[labeled].apply(
+        lambda r: QUADRANT_NAMES[(r["growth_state"], r["inflation_state"])], axis=1
+    )
+    return out
+
+
 def main():
     panel = pd.read_parquet(DATA_PROCESSED / "panel.parquet")
     print(f"panel in:  {panel.shape[0]} rows, {panel.index.min().date()} -> {panel.index.max().date()}")
 
     panel = add_states(panel)
+    panel = add_regime(panel)
 
     n_unlabeled = panel["growth_state"].isna().sum()
     print(
@@ -91,6 +111,10 @@ def main():
     print(labeled["growth_state"].value_counts())
     print("\ninflation_state counts:")
     print(labeled["inflation_state"].value_counts())
+
+    print("\nregime counts (N months per regime -- small-N regimes will get wide")
+    print("bootstrap CIs in Week 3; reporting this loudly is deliberate):")
+    print(labeled["regime"].value_counts())
 
     out_path = DATA_PROCESSED / "panel.parquet"
     panel.to_parquet(out_path)

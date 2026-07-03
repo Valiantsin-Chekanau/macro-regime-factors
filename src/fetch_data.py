@@ -13,6 +13,17 @@ and subtly wrong (can return a stale period's late revision instead of the newes
 known period). Instead we pull get_series_all_releases() ONCE per series (one bulk
 call) and do all point-in-time lookups locally in pandas.
 
+Within-vintage YoY (audit fix, Jul 2026): YoY transforms are computed HERE, inside
+each decision date's vintage — value(P, as-of T) / value(P-12, as-of T) - 1 — NOT
+downstream via pct_change(12) on the PIT level panel. Differencing the PIT panel
+compares two vintages ~14 months apart, so every agency rebasing lands inside the
+ratio: CPI's Jan-1988 re-reference (1967=100 -> 1982-84=100) read as "-65% inflation"
+for 12 straight months and polluted the 5yr trailing mean into 1993; INDPRO rebasings
+(1976/1985/1990/1997/2003/2005/2010/2021) did the same to growth. Within a single
+vintage the index base is constant and cancels in the ratio. This is also the
+real-time-data-literature convention (Croushore & Stark): transform within a vintage,
+then step along the vintage axis.
+
 Two paths, in priority order:
   1. ALFRED vintages (preferred) — described above.
   2. Lag-floor fallback (safety net) — if ALFRED vintage history doesn't cover a
@@ -45,8 +56,10 @@ MACRO_SERIES = {
     "CPIAUCSL": "inflation",  # CPI-U, SA, monthly — primary inflation proxy
 }
 
-# Rough publication delays (guide's numbers) — fallback path ONLY.
-# Confirm against actual ALFRED vintage dates before trusting these blindly.
+# Rough publication delays AFTER THE REFERENCE MONTH ENDS — fallback path ONLY.
+# FRED indexes a month's value by the month START, so availability is
+# period_start + 1 month + lag_days (audit fix: lagging from period start made
+# April data "known" on Apr 18, i.e. ~4 weeks before it was actually published).
 PUBLICATION_LAG_DAYS = {
     "INDPRO": 17,     # ~2-3 wks after month-end reference period
     "CPIAUCSL": 17,   # ~2-3 wks after month-end reference period
@@ -74,66 +87,101 @@ def fetch_all_releases(fred: Fred, series_id: str) -> pd.DataFrame:
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
     df["realtime_start"] = pd.to_datetime(df["realtime_start"])
+    df = df.dropna(subset=["value"])  # ALFRED can carry deleted-observation rows
     return df.sort_values(["date", "realtime_start"]).reset_index(drop=True)
 
 
-def pit_panel_from_releases(releases: pd.DataFrame, decision_dates, series_id: str) -> pd.Series:
+def pit_panel_from_releases(releases: pd.DataFrame, decision_dates, series_id: str) -> pd.DataFrame:
     """
-    For each decision date T: find the newest reference period whose FIRST release
-    happened on/before T, then take that period's latest revision known as of T.
+    For each decision date T, resolve everything WITHIN the vintage known at T:
+      level: newest reference period P whose FIRST release happened on/before T,
+             taken at its latest revision with realtime_start <= T.
+      yoy:   that level vs. the SAME vintage's value for period P-12 (also latest
+             revision <= T). Same vintage => same index base => rebasings cancel.
+    Returns a DataFrame with columns [series_id, f"{series_id}_yoy"].
     All done locally in pandas — no network calls.
     """
     first_release = releases.groupby("date")["realtime_start"].min().sort_index()
+    by_period = {
+        p: g.sort_values("realtime_start")[["realtime_start", "value"]]
+        for p, g in releases.groupby("date")
+    }
 
-    values = {}
+    def value_as_of(period, T):
+        g = by_period.get(period)
+        if g is None:
+            return None
+        vis = g[g["realtime_start"] <= T]
+        return None if vis.empty else vis["value"].iloc[-1]
+
+    levels, yoys = {}, {}
     for T in decision_dates:
         visible = first_release[first_release <= T]
         if visible.empty:
             continue
         latest_period = visible.index.max()
-        rows = releases[(releases["date"] == latest_period) & (releases["realtime_start"] <= T)]
-        if rows.empty:
+        v = value_as_of(latest_period, T)
+        if v is None:
             continue
-        values[T] = rows.sort_values("realtime_start")["value"].iloc[-1]
+        levels[T] = v
+        v12 = value_as_of(latest_period - pd.DateOffset(months=12), T)
+        if v12 is not None and v12 != 0:
+            yoys[T] = v / v12 - 1.0
 
-    if not values:
+    if not levels:
         raise RuntimeError(f"no point-in-time values resolved for {series_id}")
-    return pd.Series(values, name=series_id).sort_index()
+    return pd.DataFrame(
+        {series_id: pd.Series(levels), f"{series_id}_yoy": pd.Series(yoys)}
+    ).sort_index()
 
 
-def fetch_pit_series_lag_floor(fred: Fred, series_id: str, decision_dates) -> pd.Series:
+def fetch_pit_series_lag_floor(fred: Fred, series_id: str, decision_dates) -> pd.DataFrame:
     """
     Fallback: pull latest-revised series once, then lag it by its publication delay.
     Less rigorous than ALFRED (ignores revisions, just delays availability) but
     never blocks — used only if ALFRED vintages error out or don't cover the range.
+    YoY here comes from the single latest vintage, which is internally
+    base-consistent, so pct_change(12) is safe on THIS path (and only this path).
     """
     latest = fred.get_series(series_id)
     lag_days = PUBLICATION_LAG_DAYS.get(series_id, 21)
-    values = {}
+    df = pd.DataFrame({"value": latest, "yoy": latest.pct_change(12)})
+    # month indexed by its start; published ~lag_days after the month ENDS
+    df["available"] = df.index + pd.DateOffset(months=1) + pd.Timedelta(days=lag_days)
+
+    levels, yoys = {}, {}
     for d in decision_dates:
-        available_as_of = latest[latest.index + pd.Timedelta(days=lag_days) <= d]
-        if not available_as_of.empty:
-            values[d] = available_as_of.iloc[-1]
-    return pd.Series(values, name=series_id).sort_index()
+        vis = df[df["available"] <= d]
+        if vis.empty:
+            continue
+        row = vis.iloc[-1]
+        levels[d] = row["value"]
+        if pd.notna(row["yoy"]):
+            yoys[d] = row["yoy"]
+    return pd.DataFrame(
+        {series_id: pd.Series(levels), f"{series_id}_yoy": pd.Series(yoys)}
+    ).sort_index()
 
 
 def fetch_macro_panel(fred: Fred):
     """Returns (panel_df, releases_cache) — releases_cache reused later for the sanity check."""
     decision_dates = monthly_decision_dates()
-    cols = {}
+    frames = []
     releases_cache = {}
     for series_id in MACRO_SERIES:
         try:
             print(f"  [ALFRED] {series_id}: pulling full vintage history (1 bulk call)...")
             releases = fetch_all_releases(fred, series_id)
             releases_cache[series_id] = releases
-            cols[series_id] = pit_panel_from_releases(releases, decision_dates, series_id)
-            print(f"    resolved {len(cols[series_id])} monthly point-in-time values")
+            frame = pit_panel_from_releases(releases, decision_dates, series_id)
+            print(f"    resolved {frame[series_id].notna().sum()} monthly PIT levels, "
+                  f"{frame[f'{series_id}_yoy'].notna().sum()} within-vintage YoY values")
         except Exception as e:  # noqa: BLE001
             print(f"  [ALFRED FAILED for {series_id}: {e}] falling back to lag-floor")
-            cols[series_id] = fetch_pit_series_lag_floor(fred, series_id, decision_dates)
+            frame = fetch_pit_series_lag_floor(fred, series_id, decision_dates)
             releases_cache[series_id] = None
-    return pd.DataFrame(cols), releases_cache
+        frames.append(frame)
+    return pd.concat(frames, axis=1), releases_cache
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +210,7 @@ def sanity_check_vintages(fred: Fred, series_id: str, releases: pd.DataFrame, sa
     print(f"\nSanity check for {series_id}: as-of value vs latest-revised value")
     print(f"{'as_of_date':<12}{'ref_period':<12}{'as_of_value':>14}{'latest_value':>14}{'differs?':>10}")
     latest = fred.get_series(series_id)
-    single_date_panel = pit_panel_from_releases(releases, sample_dates, series_id)
+    single_date_panel = pit_panel_from_releases(releases, sample_dates, series_id)[series_id]
     first_release = releases.groupby("date")["realtime_start"].min().sort_index()
     for T, as_of_val in single_date_panel.items():
         visible = first_release[first_release <= T]
@@ -202,7 +250,7 @@ def main():
         sanity_check_vintages(fred, series_id, releases_cache.get(series_id), sample_dates)
 
     print("\nDone. Next: run src/build_panel.py to merge with factor returns, "
-          "then build the regime classifier (Week 2).")
+          "then src/regimes.py, then python tests/test_sanity.py.")
 
 
 if __name__ == "__main__":

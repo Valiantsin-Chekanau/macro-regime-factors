@@ -2,7 +2,8 @@
 Week 1 DoD: align point-in-time macro data with factor returns into one monthly panel.
 
 Alignment logic (why this isn't just a naive join):
-- macro_pit[T] = the macro state KNOWN as of the start of month T (see fetch_data.py).
+- macro_pit[T] = the macro state KNOWN as of the start of month T (see fetch_data.py),
+  including within-vintage YoY columns computed inside each date's vintage.
 - french_factors[T] = the factor return REALIZED DURING month T.
 Pairing macro_pit[T] with french_factors[T] on the same index date is exactly the
 causal ordering you want: only information available BEFORE month T's returns begin
@@ -22,6 +23,8 @@ import pandas as pd
 DATA_PROCESSED = Path("data/processed")
 DATA_RAW = Path("data/raw")
 
+MACRO_COLS = ["INDPRO", "INDPRO_yoy", "CPIAUCSL", "CPIAUCSL_yoy"]
+
 
 def main():
     macro = pd.read_parquet(DATA_PROCESSED / "macro_pit.parquet")
@@ -34,13 +37,13 @@ def main():
     print(f"\nafter inner join on date index: {panel.shape[0]} rows, "
           f"{panel.index.min().date()} -> {panel.index.max().date()}")
 
-    # CPIAUCSL's point-in-time coverage doesn't start until ~1972 (see fetch_data.py
-    # sanity check) — drop rows missing either macro column rather than silently
+    # CPIAUCSL's point-in-time coverage doesn't start until ALFRED's first CPI
+    # vintage (~1972-08) — drop rows missing any macro column rather than silently
     # carrying NaNs into Week 2's classifier.
     before = len(panel)
-    panel = panel.dropna(subset=["INDPRO", "CPIAUCSL"])
+    panel = panel.dropna(subset=MACRO_COLS)
     dropped = before - len(panel)
-    print(f"dropped {dropped} rows with missing macro data (pre-1972 CPI coverage gap)")
+    print(f"dropped {dropped} rows with missing macro data (pre-1972 CPI vintage coverage gap)")
     print(f"\nfinal usable panel: {panel.shape[0]} rows, "
           f"{panel.index.min().date()} -> {panel.index.max().date()}")
     print(f"columns: {list(panel.columns)}")

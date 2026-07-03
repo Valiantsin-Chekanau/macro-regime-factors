@@ -1,19 +1,23 @@
 """
 Week 2: growth x inflation regime classifier.
 
-Design: interpretable 2x2, not a latent-state model (HMM/regime-switching). See the
-"Why not an HMM" note in this module for the rationale — short version: with ~50 years
-of monthly data and maybe 6-8 full macro cycles, a latent-state model has enough
-freedom to fit noise and call it a "regime," and the fit is not falsifiable by eye.
-A deterministic rule you can compute on a napkin is falsifiable and auditable.
+Design: interpretable 2x2, not a latent-state model (HMM/regime-switching). See
+docs/regime_classifier_rationale.md — short version: with ~50 years of monthly data
+and maybe 6-8 full macro cycles, a latent-state model has enough freedom to fit
+noise and call it a "regime," and the fit is not falsifiable by eye. A deterministic
+rule you can compute on a napkin is falsifiable and auditable.
 
 Definitions (locked, not tuned):
-- Growth state: YoY % change in INDPRO, compared to its own trailing 60-month mean.
-  Up if YoY > trailing mean, else Down.
-- Inflation state: YoY % change in CPIAUCSL, compared to its own trailing 60-month mean.
-  Rising if YoY > trailing mean, else Falling.
-- Both YoY and CPIAUCSL/INDPRO inputs come from data/processed/panel.parquet, which is
-  already point-in-time (Week 1) -- so nothing computed here reintroduces lookahead.
+- Growth state: within-vintage YoY % change in INDPRO (computed in the Week 1 PIT
+  layer, see fetch_data.py) vs. the mean of its own PRIOR 60 monthly YoY values
+  (current month excluded — "trailing" means strictly before, no self-comparison).
+  Above -> Up, else Down (ties break Down).
+- Inflation state: same construction on CPIAUCSL YoY. Above -> Rising, else Falling.
+- YoY arrives PRECOMPUTED in panel.parquet. It is deliberately NOT recomputed here
+  via pct_change(12): differencing the PIT level panel compares vintages ~14 months
+  apart, and every agency rebasing corrupts the ratio (caught in the Jul-2026 audit —
+  CPI's 1988 re-reference read as -65% "inflation" and polluted the trailing mean
+  into 1993). Within-vintage YoY is base-consistent by construction.
 
 Why 60-month (5yr) trailing mean, not an expanding (full-history) mean:
 An expanding mean anchors "normal" growth/inflation to the entire sample average,
@@ -23,12 +27,14 @@ A rolling 5yr window instead asks "is growth/inflation running hot or cold relat
 what's been normal *recently*" -- closer to how a regime is actually experienced, and
 the guide's brief explicitly allows either; this is the pick, not a tuned choice.
 
-Cost: the first 60 months of any YoY series lack a full trailing window and are
-dropped (reported below, not silently NaN-filled).
+Cost: the first 60 months of the panel lack a full prior-60 window (plus 1 for the
+current-month exclusion) and are dropped (reported below, not silently NaN-filled).
 
 Run:
     python src/regimes.py
 Requires data/processed/panel.parquet (produced by src/build_panel.py).
+Writes data/processed/panel_regimes.parquet — panel.parquet is left untouched, so
+build_panel.py and regimes.py stay order-independent and re-runnable.
 """
 
 from pathlib import Path
@@ -48,16 +54,18 @@ QUADRANT_NAMES = {
 
 
 def add_states(panel: pd.DataFrame) -> pd.DataFrame:
-    """Add YoY growth/inflation and Up/Down, Rising/Falling state columns."""
+    """Add Up/Down, Rising/Falling state columns from the precomputed PIT YoY."""
     out = panel.copy()
 
-    out["growth_yoy"] = out["INDPRO"].pct_change(12)
-    out["inflation_yoy"] = out["CPIAUCSL"].pct_change(12)
+    # within-vintage YoY from the Week 1 PIT layer — NOT pct_change(12), see docstring
+    out["growth_yoy"] = out["INDPRO_yoy"]
+    out["inflation_yoy"] = out["CPIAUCSL_yoy"]
 
-    out["growth_trend"] = out["growth_yoy"].rolling(
+    # trailing = mean over the PRIOR 60 months, current month excluded
+    out["growth_trend"] = out["growth_yoy"].shift(1).rolling(
         TRAILING_WINDOW_MONTHS, min_periods=TRAILING_WINDOW_MONTHS
     ).mean()
-    out["inflation_trend"] = out["inflation_yoy"].rolling(
+    out["inflation_trend"] = out["inflation_yoy"].shift(1).rolling(
         TRAILING_WINDOW_MONTHS, min_periods=TRAILING_WINDOW_MONTHS
     ).mean()
 
@@ -98,7 +106,8 @@ def main():
     n_unlabeled = panel["growth_state"].isna().sum()
     print(
         f"\nfirst {n_unlabeled} months lack a full {TRAILING_WINDOW_MONTHS}-month "
-        f"trailing window (YoY eats 12mo, trend eats {TRAILING_WINDOW_MONTHS}mo more) "
+        f"prior window (trend excludes the current month, so it needs "
+        f"{TRAILING_WINDOW_MONTHS} strictly-prior YoY values) "
         f"-> state is unlabeled there, not silently zero-filled."
     )
 
@@ -116,7 +125,7 @@ def main():
     print("bootstrap CIs in Week 3; reporting this loudly is deliberate):")
     print(labeled["regime"].value_counts())
 
-    out_path = DATA_PROCESSED / "panel.parquet"
+    out_path = DATA_PROCESSED / "panel_regimes.parquet"
     panel.to_parquet(out_path)
     print(f"\nsaved -> {out_path}")
 

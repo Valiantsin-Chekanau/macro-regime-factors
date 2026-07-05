@@ -18,3 +18,6 @@ data/
 
 # Personal planning doc — not for the public repo
 macro_regime_conditioning_guide.md
+
+# Private check/inspection notebooks — public repo shows pipeline + writeup only
+*.ipynb

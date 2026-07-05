@@ -4,10 +4,10 @@ Conditioning U.S. equity-factor performance (value, momentum, size, profitabilit
 investment) on a growth × inflation macro-regime layer — built with point-in-time
 data to avoid lookahead.
 
-**Status:** Week 1 done (point-in-time data spine + aligned panel). Week 2 done
-(growth x inflation regime classifier). Week 3 done (conditional factor performance
-+ block-bootstrap Sharpe CIs). Week 4 (non-stationarity + robustness) next. See
-`WRITEUP.md` (coming Week 4) for results.
+**Status:** Weeks 1-4 done — point-in-time data spine + aligned panel; growth x
+inflation regime classifier; conditional factor performance + block-bootstrap
+Sharpe CIs; non-stationarity split + one robustness check. Remaining: figures +
+final polish. Full results and limitations: `WRITEUP.md`.
 
 ## Thesis
 Not a return predictor. Macro is used as a *conditioning variable*: how the equity
@@ -27,14 +27,19 @@ factor cross-section reorganizes across macro states, reported with honest error
 - Factors: Ken French Data Library (5-factor + momentum, monthly).
 
 ## Results
-_Full writeup coming Week 4._ Week 3 headline: of 24 regime x factor Sharpe ratios
-(6 factors x 4 regimes), 13 have block-bootstrap 95% CIs that straddle zero —
-reported as the finding, not hidden. Standouts that don't straddle zero: HML, RMW,
-CMA all positive in Goldilocks and Overheating; HML sharply negative in Stagflation
-(point Sharpe -0.55, CI entirely below +0.18); RMW and Mom positive in Stagflation.
-Small-N regimes (Stagflation, 108 months) get visibly wider CIs than large ones
-(Deflationary slowdown, 174 months) — the effective-N problem showing up exactly
-where it should.
+_Full tables and caveats: `WRITEUP.md`._ Week 3 headline: of 24 regime x factor
+Sharpe ratios (6 factors x 4 regimes), 13 have block-bootstrap 95% CIs that
+straddle zero — reported as the finding, not hidden. Standouts that don't straddle
+zero: HML, RMW, CMA all positive in Goldilocks and Overheating; RMW and Mom
+positive in Stagflation; Mkt-RF and Mom positive in Goldilocks, Mkt-RF in
+Deflationary slowdown (11 cells in all). HML's sharply negative point Sharpe in
+Stagflation (-0.55) does NOT clear the bar: its CI [-1.28, +0.17] still crosses
+zero — even the sharpest conditional point estimate in the table stays inside
+small-N uncertainty, which is the thesis working as intended. Week 4: only 2 of
+the 11 standouts independently reconfirm in both halves of a pre/post-2000 split,
+and in 3 cells a premium whose pre-2000 CI cleared zero flips sign after 2000;
+10 of 11 survive swapping the classifier's 60mo trailing window for 36mo (77.6%
+label agreement).
 
 ## How to run
 ```bash
@@ -43,6 +48,10 @@ cp .env.example .env   # add your FRED_API_KEY
 python src/fetch_data.py     # pulls point-in-time macro + factor data -> data/
 python src/build_panel.py    # merges into one aligned monthly panel
 python src/regimes.py        # labels each month with a growth x inflation regime
+python -m src.analysis       # conditional stats + block-bootstrap Sharpe CIs
+python -m src.stability      # pre/post-2000 non-stationarity split
+python -m src.robustness     # one robustness check: 60mo -> 36mo classifier window
+python -m pytest tests/ -q   # sanity + regression suite
 ```
 
 ## Limitations

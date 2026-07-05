@@ -37,8 +37,8 @@ empirical median regime run-length in this panel is 5-6 months (mean 7.3,
 is used instead. This is picked once from the data's own persistence structure,
 not tuned by trial and error against the resulting CIs.
 
-Effective N is genuinely small (Stagflation = 108 months = maybe 3-4 independent
-stretches). Expect wide CIs. A CI straddling zero is the honest finding, not a
+Effective N is genuinely small (Stagflation = 108 months arriving in 17 separate
+runs, which cluster into roughly 6 distinct macro episodes). Expect wide CIs. A CI straddling zero is the honest finding, not a
 failure to find one -- report it, don't chase a cleaner result that isn't there.
 
 Run:
@@ -186,7 +186,13 @@ def block_bootstrap_sharpe_ci(
 def bootstrap_table(panel: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
     """Same regime x factor grid as conditional_table, but Sharpe + block-bootstrap
     CI instead of the full stat set. One shared RNG (seeded) across the whole
-    table so results are reproducible run-to-run."""
+    table so results are reproducible run-to-run.
+
+    Also adds an 'All (unconditional)' pseudo-regime row per factor (same
+    convention as conditional_table) so the conditional CIs have an unconditional
+    baseline to compare against. main() excludes this row when computing the
+    straddle-rate summary -- it isn't one of the 24 regime x factor cells being
+    counted, just a reference line."""
     rng = np.random.default_rng(seed)
     rows = []
     for regime in sorted(panel["regime"].unique()):
@@ -203,6 +209,19 @@ def bootstrap_table(panel: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
                 "ci_width": (hi - lo) if pd.notna(hi) and pd.notna(lo) else np.nan,
                 "straddles_zero": (lo < 0 < hi) if pd.notna(lo) and pd.notna(hi) else None,
             })
+    full = panel.sort_index()
+    for factor in FACTOR_COLS:
+        sharpe, lo, hi, n = block_bootstrap_sharpe_ci(full[factor], rng)
+        rows.append({
+            "regime": "All (unconditional)",
+            "factor": factor,
+            "n_months": n,
+            "sharpe": sharpe,
+            "ci_lo_95": lo,
+            "ci_hi_95": hi,
+            "ci_width": (hi - lo) if pd.notna(hi) and pd.notna(lo) else np.nan,
+            "straddles_zero": (lo < 0 < hi) if pd.notna(lo) and pd.notna(hi) else None,
+        })
     return pd.DataFrame(rows)
 
 

@@ -53,20 +53,25 @@ QUADRANT_NAMES = {
 }
 
 
-def add_states(panel: pd.DataFrame) -> pd.DataFrame:
-    """Add Up/Down, Rising/Falling state columns from the precomputed PIT YoY."""
+def add_states(panel: pd.DataFrame, window: int = TRAILING_WINDOW_MONTHS) -> pd.DataFrame:
+    """Add Up/Down, Rising/Falling state columns from the precomputed PIT YoY.
+
+    `window` (months) defaults to the locked 60mo (5yr) pick -- exposed as a
+    parameter only so src/robustness.py can rebuild the classifier at an
+    alternate window (36mo/3yr) for the Week 4 robustness check without
+    duplicating this logic. Not meant to be tuned in the main pipeline."""
     out = panel.copy()
 
     # within-vintage YoY from the Week 1 PIT layer — NOT pct_change(12), see docstring
     out["growth_yoy"] = out["INDPRO_yoy"]
     out["inflation_yoy"] = out["CPIAUCSL_yoy"]
 
-    # trailing = mean over the PRIOR 60 months, current month excluded
+    # trailing = mean over the PRIOR `window` months, current month excluded
     out["growth_trend"] = out["growth_yoy"].shift(1).rolling(
-        TRAILING_WINDOW_MONTHS, min_periods=TRAILING_WINDOW_MONTHS
+        window, min_periods=window
     ).mean()
     out["inflation_trend"] = out["inflation_yoy"].shift(1).rolling(
-        TRAILING_WINDOW_MONTHS, min_periods=TRAILING_WINDOW_MONTHS
+        window, min_periods=window
     ).mean()
 
     out["growth_state"] = None

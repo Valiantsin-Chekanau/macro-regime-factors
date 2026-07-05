@@ -50,7 +50,11 @@ import pandas_datareader.data as web
 DATA_RAW = Path("data/raw")
 DATA_PROCESSED = Path("data/processed")
 
-# Growth / inflation proxies. Guide's primary + robustness alternates.
+# Growth / inflation proxies actually fetched here (primary series only). The
+# guide's robustness alternates (PAYEMS for growth, PCEPILFE/core PCE for
+# inflation) are NOT fetched by this module -- the Week 4 robustness check
+# instead perturbs the regime classifier's trailing-window length (see
+# src/robustness.py), which needs no new FRED series.
 MACRO_SERIES = {
     "INDPRO": "growth",       # industrial production, monthly — primary growth proxy
     "CPIAUCSL": "inflation",  # CPI-U, SA, monthly — primary inflation proxy

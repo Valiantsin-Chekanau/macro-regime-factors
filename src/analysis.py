@@ -38,7 +38,8 @@ is used instead. This is picked once from the data's own persistence structure,
 not tuned by trial and error against the resulting CIs.
 
 Effective N is genuinely small (Stagflation = 108 months arriving in 17 separate
-runs, which cluster into roughly 6 distinct macro episodes). Expect wide CIs. A CI straddling zero is the honest finding, not a
+runs, which cluster into roughly 6 distinct macro episodes under a two-year gap
+rule). Expect wide CIs. A CI straddling zero is the honest finding, not a
 failure to find one -- report it, don't chase a cleaner result that isn't there.
 
 Run:

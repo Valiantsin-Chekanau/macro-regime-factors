@@ -168,11 +168,11 @@ choice). This is a reassuring result: the Section 3 findings are not an artifact
 
 - **Effective N is genuinely small.** The 586 labeled months arrive in only 80 contiguous
   regime runs (median length ~5.5 months, 17-23 runs per regime), and runs of the same
-  regime cluster into far fewer distinct macro episodes: merging runs separated by less
-  than a year gives roughly 9-11 episodes even for the largest regime (Deflationary
-  slowdown, 174 months) and ~6 for Stagflation (108 months — essentially the late-70s/
-  early-80s, ~1990, 2008, and 2021-23 clusters). The unit of independent evidence is
-  closer to the episode than the month. This is why the block bootstrap — not iid
+  regime cluster into far fewer distinct macro episodes: merging same-regime runs
+  separated by less than a year gives ~10-12 episodes per regime; a coarser two-year gap
+  rule gives 6-9, with Stagflation at ~6 (essentially the late-70s/early-80s, ~1990,
+  2008, and 2021-23 clusters). The unit of independent evidence is closer to the episode
+  than the month. This is why the block bootstrap — not iid
   resampling — is the whole point of Week 3, and why Week 4's pre/post split predictably
   produces wide, mostly-inconclusive per-half CIs (Section 4).
 - **Point Sharpe uses standard iid annualization** (`mean x 12 / (vol x sqrt(12))`). Lo
